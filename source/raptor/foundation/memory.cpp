@@ -82,7 +82,7 @@ void imgui_walker( void* ptr, size_t size, int used, void* user ) {
         memory_size /= 1024;
         memory_unit = "kb";
     }
-    ImGui::Text( "\t%p %s size: %4llu %s\n", ptr, used ? "used" : "free", memory_size, memory_unit );
+    ImGui::Text( "\t%p %s size: %4u %s\n", ptr, used ? "used" : "free", memory_size, memory_unit );
 
     MemoryStatistics* stats = ( MemoryStatistics* )user;
     stats->add( used ? size : 0 );
@@ -172,7 +172,7 @@ void HeapAllocator::debug_ui() {
 
     ImGui::Separator();
     ImGui::Text( "\tAllocation count %d", stats.allocation_count );
-    ImGui::Text( "\tAllocated %llu K, free %llu Mb, total %llu Mb", stats.allocated_bytes / (1024 * 1024), ( max_size - stats.allocated_bytes ) / ( 1024 * 1024 ), max_size / ( 1024 * 1024 ) );
+    ImGui::Text( "\tAllocated %lu K, free %lu Mb, total %lu Mb", stats.allocated_bytes / (1024 * 1024), ( max_size - stats.allocated_bytes ) / ( 1024 * 1024 ), max_size / ( 1024 * 1024 ) );
 }
 #endif // RAPTOR_IMGUI
 

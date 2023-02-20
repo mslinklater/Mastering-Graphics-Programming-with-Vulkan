@@ -326,8 +326,34 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     result = vkEnumeratePhysicalDevices( vulkan_instance, &num_physical_device, gpus );
     check( result );
 
+    VkPhysicalDevice discrete_gpu = VK_NULL_HANDLE;
+    VkPhysicalDevice integrated_gpu = VK_NULL_HANDLE;
+    for ( u32 i = 0; i < num_physical_device; ++i ) {
+        VkPhysicalDevice physical_device = gpus[ i ];
+        vkGetPhysicalDeviceProperties( physical_device, &vulkan_physical_properties );
+
+        if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ) {
+            discrete_gpu = physical_device;
+            continue;
+        }
+
+        if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ) {
+            integrated_gpu = physical_device;
+            continue;
+        }
+    }
+
+    if ( discrete_gpu != VK_NULL_HANDLE ) {
+        vulkan_physical_device = discrete_gpu;
+    } else if ( integrated_gpu != VK_NULL_HANDLE ) {
+        vulkan_physical_device = integrated_gpu;
+    } else {
+        RASSERTM( false, "Suitable GPU device not found!" );
+        return;
+    }
+
     // TODO: improve - choose the first gpu.
-    vulkan_physical_device = gpus[ 0 ];
+//    vulkan_physical_device = gpus[ 0 ];
     rfree( gpus, allocator );
 
     vkGetPhysicalDeviceProperties( vulkan_physical_device, &vulkan_physical_properties );
