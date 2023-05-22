@@ -201,6 +201,11 @@ static VkBool32 debug_utils_callback( VkDebugUtilsMessageSeverityFlagBitsEXT sev
                                                             const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
                                                             void* user_data ) {
     rprint( " MessageID: %s %i\nMessage: %s\n\n", callback_data->pMessageIdName, callback_data->messageIdNumber, callback_data->pMessage );
+
+    if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
+        // __debugbreak();
+    }
+
     return VK_FALSE;
 }
 
@@ -230,6 +235,32 @@ static CommandBufferRing command_buffer_ring;
 
 static sizet            s_ubo_alignment = 256;
 static sizet            s_ssbo_alignemnt = 256;
+
+bool GpuDevice::get_family_queue( VkPhysicalDevice physical_device ) {
+    u32 queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr );
+
+    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof( VkQueueFamilyProperties ) * queue_family_count, allocator );
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families );
+
+    u32 family_index = 0;
+    VkBool32 surface_supported;
+    for ( ; family_index < queue_family_count; ++family_index ) {
+        VkQueueFamilyProperties queue_family = queue_families[ family_index ];
+        if ( queue_family.queueCount > 0 && queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT ) ) {
+            vkGetPhysicalDeviceSurfaceSupportKHR( physical_device, family_index, vulkan_window_surface, &surface_supported);
+
+            if ( surface_supported ) {
+                vulkan_queue_family = family_index;
+                break;
+            }
+        }
+    }
+
+    rfree( queue_families, allocator );
+
+    return surface_supported;
+}
 
 void GpuDevice::init( const DeviceCreation& creation ) {
 
@@ -326,6 +357,15 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     result = vkEnumeratePhysicalDevices( vulkan_instance, &num_physical_device, gpus );
     check( result );
 
+    //////// Create drawable surface
+    // Create surface
+    SDL_Window* window = ( SDL_Window* )creation.window;
+    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
+        rprint( "Failed to create Vulkan surface.\n" );
+    }
+
+    sdl_window = window;
+
     VkPhysicalDevice discrete_gpu = VK_NULL_HANDLE;
     VkPhysicalDevice integrated_gpu = VK_NULL_HANDLE;
     for ( u32 i = 0; i < num_physical_device; ++i ) {
@@ -333,12 +373,21 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         vkGetPhysicalDeviceProperties( physical_device, &vulkan_physical_properties );
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ) {
-            discrete_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                // NOTE(marco): prefer discrete GPU over integrated one, stop at first discrete GPU that has
+                // present capabilities
+                discrete_gpu = physical_device;
+                break;
+            }
+
             continue;
         }
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ) {
-            integrated_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                integrated_gpu = physical_device;
+            }
+
             continue;
         }
     }
@@ -352,8 +401,6 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         return;
     }
 
-    // TODO: improve - choose the first gpu.
-//    vulkan_physical_device = gpus[ 0 ];
     rfree( gpus, allocator );
 
     vkGetPhysicalDeviceProperties( vulkan_physical_device, &vulkan_physical_properties );
@@ -365,39 +412,12 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     s_ssbo_alignemnt = vulkan_physical_properties.limits.minStorageBufferOffsetAlignment;
 
     //////// Create logical device
-    u32 queue_family_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties( vulkan_physical_device, &queue_family_count, nullptr );
-
-    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof( VkQueueFamilyProperties ) * queue_family_count, allocator );
-    vkGetPhysicalDeviceQueueFamilyProperties( vulkan_physical_device, &queue_family_count, queue_families );
-
-    u32 family_index = 0;
-    for ( ; family_index < queue_family_count; ++family_index ) {
-        VkQueueFamilyProperties queue_family = queue_families[ family_index ];
-        if ( queue_family.queueCount > 0 && queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT ) ) {
-            //indices.graphicsFamily = i;
-            break;
-        }
-
-        //VkBool32 presentSupport = false;
-        //vkGetPhysicalDeviceSurfaceSupportKHR( vulkan_physical_device, i, _surface, &presentSupport );
-        //if ( queue_family.queueCount && presentSupport ) {
-        //    indices.presentFamily = i;
-        //}
-
-        //if ( indices.isComplete() ) {
-        //    break;
-        //}
-    }
-
-    rfree( queue_families, allocator );
-
     u32 device_extension_count = 1;
     const char* device_extensions[] = { "VK_KHR_swapchain" };
     const float queue_priority[] = { 1.0f };
     VkDeviceQueueCreateInfo queue_info[ 1 ] = {};
     queue_info[ 0 ].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_info[ 0 ].queueFamilyIndex = family_index;
+    queue_info[ 0 ].queueFamilyIndex = vulkan_queue_family;
     queue_info[ 0 ].queueCount = 1;
     queue_info[ 0 ].pQueuePriorities = queue_priority;
 
@@ -423,18 +443,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         pfnCmdEndDebugUtilsLabelEXT = ( PFN_vkCmdEndDebugUtilsLabelEXT )vkGetDeviceProcAddr( vulkan_device, "vkCmdEndDebugUtilsLabelEXT" );
     }
 
-    vkGetDeviceQueue( vulkan_device, family_index, 0, &vulkan_queue );
-
-    vulkan_queue_family = family_index;
-
-    //////// Create drawable surface
-    // Create surface
-    SDL_Window* window = ( SDL_Window* )creation.window;
-    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
-        rprint( "Failed to create Vulkan surface.\n" );
-    }
-
-    sdl_window = window;
+    vkGetDeviceQueue( vulkan_device, vulkan_queue_family, 0, &vulkan_queue );
 
     // Create Framebuffers
     int window_width, window_height;
@@ -522,13 +531,13 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     vkCreateQueryPool( vulkan_device, &vqpci, vulkan_allocation_callbacks, &vulkan_timestamp_query_pool );
 
     //// Init pools
-    buffers.init( allocator, 512, sizeof( Buffer ) );
+    buffers.init( allocator, 4096, sizeof( Buffer ) );
     textures.init( allocator, 512, sizeof( Texture ) );
     render_passes.init( allocator, 256, sizeof( RenderPass ) );
     descriptor_set_layouts.init( allocator, 128, sizeof( DesciptorSetLayout ) );
     pipelines.init( allocator, 128, sizeof( Pipeline ) );
     shaders.init( allocator, 128, sizeof( ShaderState ) );
-    descriptor_sets.init( allocator, 128, sizeof( DesciptorSet ) );
+    descriptor_sets.init( allocator, 256, sizeof( DesciptorSet ) );
     samplers.init( allocator, 32, sizeof( Sampler ) );
     //command_buffers.init( allocator, 128, sizeof( CommandBuffer ) );
 
@@ -1809,7 +1818,6 @@ static void vulkan_create_swapchain_pass( GpuDevice& gpu, const RenderPassCreati
     for ( size_t i = 0; i < gpu.vulkan_swapchain_image_count; i++ ) {
         transition_image_layout( command_buffer->vk_command_buffer, gpu.vulkan_swapchain_images[ i ], gpu.vulkan_surface_format.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, false );
     }
-    transition_image_layout( command_buffer->vk_command_buffer, depth_texture_vk->vk_image, depth_texture_vk->vk_format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, true );
 
     vkEndCommandBuffer( command_buffer->vk_command_buffer );
 

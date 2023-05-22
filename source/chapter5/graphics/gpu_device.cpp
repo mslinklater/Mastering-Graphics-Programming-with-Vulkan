@@ -152,6 +152,32 @@ static const u32        k_bindless_texture_binding = 10;
 static const u32        k_bindless_image_binding = 11;
 static const u32        k_max_bindless_resources = 1024;
 
+bool GpuDevice::get_family_queue( VkPhysicalDevice physical_device ) {
+    u32 queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr );
+
+    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof( VkQueueFamilyProperties ) * queue_family_count, allocator );
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families );
+
+    u32 family_index = 0;
+    VkBool32 surface_supported;
+    for ( ; family_index < queue_family_count; ++family_index ) {
+        VkQueueFamilyProperties queue_family = queue_families[ family_index ];
+        if ( queue_family.queueCount > 0 && queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT ) ) {
+            vkGetPhysicalDeviceSurfaceSupportKHR( physical_device, family_index, vulkan_window_surface, &surface_supported);
+
+            if ( surface_supported ) {
+                vulkan_main_queue_family = family_index;
+                break;
+            }
+        }
+    }
+
+    rfree( queue_families, allocator );
+
+    return surface_supported;
+}
+
 void GpuDevice::init( const GpuDeviceCreation& creation ) {
 
     rprint( "Gpu Device init\n" );
@@ -236,6 +262,15 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     result = vkEnumeratePhysicalDevices( vulkan_instance, &num_physical_device, gpus );
     check( result );
 
+    //////// Create drawable surface
+    // Create surface
+    SDL_Window* window = ( SDL_Window* )creation.window;
+    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
+        rprint( "Failed to create Vulkan surface.\n" );
+    }
+
+    sdl_window = window;
+
     VkPhysicalDevice discrete_gpu = VK_NULL_HANDLE;
     VkPhysicalDevice integrated_gpu = VK_NULL_HANDLE;
     for ( u32 i = 0; i < num_physical_device; ++i ) {
@@ -243,12 +278,21 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         vkGetPhysicalDeviceProperties( physical_device, &vulkan_physical_properties );
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ) {
-            discrete_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                // NOTE(marco): prefer discrete GPU over integrated one, stop at first discrete GPU that has
+                // present capabilities
+                discrete_gpu = physical_device;
+                break;
+            }
+
             continue;
         }
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ) {
-            integrated_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                integrated_gpu = physical_device;
+            }
+
             continue;
         }
     }
@@ -332,7 +376,7 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
 #endif // DEBUG
 
         // Search for main queue that should be able to do all work (graphics, compute and transfer)
-        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT ) ) {
+        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  ) ) {
             main_queue_family_index = fi;
 
             if ( queue_family.queueCount > 1 ) {
@@ -478,15 +522,6 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         vkGetDeviceQueue( vulkan_device, transfer_queue_family_index, 0, &vulkan_transfer_queue );
     }
 
-    //////// Create drawable surface
-    // Create surface
-    SDL_Window* window = ( SDL_Window* )creation.window;
-    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
-        rprint( "Failed to create Vulkan surface.\n" );
-    }
-
-    sdl_window = window;
-
     // Create Framebuffers
     int window_width, window_height;
     SDL_GetWindowSize( window, &window_width, &window_height );
@@ -598,8 +633,11 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     num_threads = creation.num_threads;
     thread_frame_pools.init( allocator, num_pools, num_pools );
 
+    // Create compute command pools and command buffers
+    compute_frame_pools.init( allocator, k_max_frames, k_max_frames );
+
     gpu_time_queries_manager = ( GPUTimeQueriesManager* )( memory );
-    gpu_time_queries_manager->init( thread_frame_pools.data, allocator, creation.gpu_time_queries_per_frame, creation.num_threads, k_max_frames );
+    gpu_time_queries_manager->init( thread_frame_pools.data, compute_frame_pools.data, allocator, creation.gpu_time_queries_per_frame, creation.num_threads, k_max_frames );
 
     for ( u32 i = 0; i < thread_frame_pools.size; ++i ) {
         GpuThreadFramePools& pool = thread_frame_pools[ i ];
@@ -626,6 +664,21 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
             VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
             VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
         vkCreateQueryPool( vulkan_device, &statistics_pool_info, vulkan_allocation_callbacks, &pool.vulkan_pipeline_stats_query_pool);
+    }
+
+    for ( u32 i = 0; i < compute_frame_pools.size; ++i ) {
+        GpuThreadFramePools& pool = compute_frame_pools[ i ];
+        pool.time_queries = &gpu_time_queries_manager->query_trees[ thread_frame_pools.size + i ];
+
+        VkCommandPoolCreateInfo cmd_pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr };
+        cmd_pool_info.queueFamilyIndex = vulkan_compute_queue_family;
+        cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+        vkCreateCommandPool( vulkan_device, &cmd_pool_info, vulkan_allocation_callbacks, &pool.vulkan_command_pool );
+
+        // Create timestamp query pool used for GPU timings.
+        VkQueryPoolCreateInfo timestamp_pool_info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, creation.gpu_time_queries_per_frame * 2u, 0 };
+        vkCreateQueryPool( vulkan_device, &timestamp_pool_info, vulkan_allocation_callbacks, &pool.vulkan_timestamp_query_pool );
     }
 
     // Create resource pools
@@ -929,7 +982,14 @@ void GpuDevice::shutdown() {
         vkDestroyCommandPool( vulkan_device, pool.vulkan_command_pool, vulkan_allocation_callbacks );
     }
 
+    for (u32 i = 0; i < compute_frame_pools.size; ++i) {
+        GpuThreadFramePools& pool = compute_frame_pools[ i ];
+        vkDestroyQueryPool( vulkan_device, pool.vulkan_timestamp_query_pool, vulkan_allocation_callbacks );
+        vkDestroyCommandPool( vulkan_device, pool.vulkan_command_pool, vulkan_allocation_callbacks );
+    }
+
     thread_frame_pools.shutdown();
+    compute_frame_pools.shutdown();
 
     vkDestroyDevice( vulkan_device, vulkan_allocation_callbacks );
 
@@ -2678,8 +2738,6 @@ void GpuDevice::create_swapchain() {
         }
 
         util_add_image_barrier( this, command_buffer->vk_command_buffer, color->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_PRESENT, 0, 1, false );
-
-        util_add_image_barrier( this, command_buffer->vk_command_buffer, depth_stencil_texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_PRESENT, 0, 1, true );
     }
 
     vkEndCommandBuffer( command_buffer->vk_command_buffer );
@@ -3040,6 +3098,91 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
         command_buffer->current_render_pass = nullptr;
     }
 
+    if (texture_to_update_bindless.size) {
+        // Handle deferred writes to bindless textures.
+        VkWriteDescriptorSet bindless_descriptor_writes[k_max_bindless_resources];
+        VkDescriptorImageInfo bindless_image_info[k_max_bindless_resources];
+
+        Texture* vk_dummy_texture = access_texture(dummy_texture);
+
+        u32 current_write_index = 0;
+        for (i32 it = texture_to_update_bindless.size - 1; it >= 0; it--) {
+            ResourceUpdate& texture_to_update = texture_to_update_bindless[it];
+
+            //if ( texture_to_update.current_frame == current_frame )
+            {
+                Texture* texture = access_texture({ texture_to_update.handle });
+                VkWriteDescriptorSet& descriptor_write = bindless_descriptor_writes[current_write_index];
+                descriptor_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                descriptor_write.descriptorCount = 1;
+                descriptor_write.dstArrayElement = texture_to_update.handle;
+                descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                descriptor_write.dstSet = vulkan_bindless_descriptor_set_cached;
+                descriptor_write.dstBinding = k_bindless_texture_binding;
+
+                // Handles should be the same.
+                RASSERT(texture->handle.index == texture_to_update.handle);
+
+                Sampler* vk_default_sampler = access_sampler(default_sampler);
+                VkDescriptorImageInfo& descriptor_image_info = bindless_image_info[current_write_index];
+
+                // Update image view and sampler if valid
+                if (!texture_to_update.deleting) {
+                    descriptor_image_info.imageView = texture->vk_image_view;
+
+                    if (texture->sampler != nullptr) {
+                        descriptor_image_info.sampler = texture->sampler->vk_sampler;
+                    }
+                    else {
+                        descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
+                    }
+                }
+                else {
+                    // Deleting: set to default image view and sampler in the current slot.
+                    descriptor_image_info.imageView = vk_dummy_texture->vk_image_view;
+                    descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
+                }
+
+                descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                descriptor_write.pImageInfo = &descriptor_image_info;
+
+                texture_to_update.current_frame = u32_max;
+
+                texture_to_update_bindless.delete_swap(it);
+
+                ++current_write_index;
+
+                // Add texture to delete
+                if (texture_to_update.deleting) {
+                    resource_deletion_queue.push({ ResourceUpdateType::Texture, texture->handle.index, current_frame, 1 });
+                }
+
+                // Add optional compute bindless descriptor update
+                if (texture->flags & TextureFlags::Compute_mask) {
+                    VkWriteDescriptorSet& descriptor_write_image = bindless_descriptor_writes[current_write_index];
+                    VkDescriptorImageInfo& descriptor_image_info_compute = bindless_image_info[current_write_index];
+
+                    // Copy common data from descriptor and image info
+                    descriptor_write_image = descriptor_write;
+                    descriptor_image_info_compute = descriptor_image_info;
+
+                    descriptor_image_info_compute.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+                    descriptor_write_image.dstBinding = k_bindless_image_binding;
+                    descriptor_write_image.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                    descriptor_write_image.pImageInfo = &descriptor_image_info_compute;
+
+                    ++current_write_index;
+                }
+            }
+        }
+
+        if (current_write_index) {
+            vkUpdateDescriptorSets(vulkan_device, current_write_index, bindless_descriptor_writes, 0, nullptr);
+        }
+    }
+
+
     // Submit command buffers
     u32 wait_semaphore_count = 1;
 
@@ -3230,6 +3373,43 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
             temporary_allocator->clear();
         }
 
+        {
+            const u32 pool_index = previous_frame;
+            GpuThreadFramePools& thread_pool = compute_frame_pools[ pool_index ];
+            GpuTimeQueryTree* time_query = thread_pool.time_queries;
+
+            // For each active time query pool
+            if ( time_query && time_query->allocated_time_query ) {
+
+                // Query GPU for all timestamps.
+                const u32 query_offset = ( num_threads * gpu_time_queries_manager->queries_per_thread ) + pool_index;
+                const u32 query_count = time_query->allocated_time_query;
+                u64* timestamps_data = ( u64* )ralloca( query_count * 2 * sizeof( u64 ), temporary_allocator );
+                vkGetQueryPoolResults( vulkan_device, thread_pool.vulkan_timestamp_query_pool, 0, query_count * 2,
+                                       sizeof( u64 ) * query_count * 2, timestamps_data,
+                                       sizeof( u64 ), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT );
+
+                // Calculate and cache the elapsed time
+                for ( u32 i = 0; i < query_count; i++ ) {
+                    u32 index = ( query_offset) + i;
+
+                    GPUTimeQuery& timestamp = gpu_time_queries_manager->timestamps[ index ];
+
+                    double start = ( double )timestamps_data[ ( i * 2 ) ];
+                    double end = ( double )timestamps_data[ ( i * 2 ) + 1 ];
+                    double range = end - start;
+                    double elapsed_time = range * gpu_timestamp_frequency;
+
+                    timestamp.elapsed_ms = elapsed_time;
+                    timestamp.frame_index = absolute_frame;
+
+                    //print_format( "%s: %2.3f d(%u) - ", timestamp.name, elapsed_time, timestamp.depth );
+                }
+            }
+
+            temporary_allocator->clear();
+        }
+
         //rprint( "%llu %f\n", gpu_time_queries_manager->frame_pipeline_statistics.statistics[ 6 ], ( gpu_time_queries_manager->frame_pipeline_statistics.statistics[ 6 ] * 1.0 ) / ( swapchain_width * swapchain_height ) );
     }
 
@@ -3247,96 +3427,6 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
 
     // This is called inside resize_swapchain as well to correctly work.
     frame_counters_advance();
-
-    if ( texture_to_update_bindless.size ) {
-        // Handle deferred writes to bindless textures.
-        static constexpr u32 k_num_writes_per_frame = 24;
-        VkWriteDescriptorSet bindless_descriptor_writes[ k_num_writes_per_frame ];
-        VkDescriptorImageInfo bindless_image_info[ k_num_writes_per_frame ];
-
-        Texture* vk_dummy_texture = access_texture( dummy_texture );
-
-        u32 current_write_index = 0;
-        for ( i32 it = texture_to_update_bindless.size - 1; it >= 0; it-- ) {
-            ResourceUpdate& texture_to_update = texture_to_update_bindless[ it ];
-
-            //if ( texture_to_update.current_frame == current_frame )
-            {
-                Texture* texture = access_texture( { texture_to_update.handle } );
-                VkWriteDescriptorSet& descriptor_write = bindless_descriptor_writes[ current_write_index ];
-                descriptor_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-                descriptor_write.descriptorCount = 1;
-                descriptor_write.dstArrayElement = texture_to_update.handle;
-                descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                descriptor_write.dstSet = vulkan_bindless_descriptor_set_cached;
-                descriptor_write.dstBinding = k_bindless_texture_binding;
-
-                // Handles should be the same.
-                RASSERT( texture->handle.index == texture_to_update.handle );
-
-                Sampler* vk_default_sampler = access_sampler( default_sampler );
-                VkDescriptorImageInfo& descriptor_image_info = bindless_image_info[ current_write_index ];
-
-                // Update image view and sampler if valid
-                if ( !texture_to_update.deleting ) {
-                    descriptor_image_info.imageView = texture->vk_image_view;
-
-                    if ( texture->sampler != nullptr ) {
-                        descriptor_image_info.sampler = texture->sampler->vk_sampler;
-                    } else {
-                        descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
-                    }
-                }
-                else {
-                    // Deleting: set to default image view and sampler in the current slot.
-                    descriptor_image_info.imageView = vk_dummy_texture->vk_image_view;
-                    descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
-                }
-
-                descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                descriptor_write.pImageInfo = &descriptor_image_info;
-
-                texture_to_update.current_frame = u32_max;
-
-                texture_to_update_bindless.delete_swap( it );
-
-                ++current_write_index;
-
-                // Add texture to delete
-                if ( texture_to_update.deleting ) {
-                    resource_deletion_queue.push( { ResourceUpdateType::Texture, texture->handle.index, current_frame, 1 } );
-                }
-
-                if ( current_write_index == k_num_writes_per_frame - 1 )
-                    break;
-
-                // Add optional compute bindless descriptor update
-                if ( texture->flags & TextureFlags::Compute_mask ) {
-                    VkWriteDescriptorSet& descriptor_write_image = bindless_descriptor_writes[ current_write_index ];
-                    VkDescriptorImageInfo& descriptor_image_info_compute = bindless_image_info[ current_write_index ];
-
-                    // Copy common data from descriptor and image info
-                    descriptor_write_image = descriptor_write;
-                    descriptor_image_info_compute = descriptor_image_info;
-
-                    descriptor_image_info_compute.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-                    descriptor_write_image.dstBinding = k_bindless_image_binding;
-                    descriptor_write_image.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                    descriptor_write_image.pImageInfo = &descriptor_image_info_compute;
-
-                    ++current_write_index;
-
-                    if ( current_write_index == k_num_writes_per_frame - 1 )
-                        break;
-                }
-            }
-        }
-
-        if ( current_write_index ) {
-            vkUpdateDescriptorSets( vulkan_device, current_write_index, bindless_descriptor_writes, 0, nullptr );
-        }
-    }
 
     // Resource deletion using reverse iteration and swap with last element.
     if ( resource_deletion_queue.size > 0 ) {
@@ -3577,8 +3667,8 @@ void GpuDevice::queue_command_buffer( CommandBuffer* command_buffer ) {
 
 //
 //
-CommandBuffer* GpuDevice::get_command_buffer( u32 thread_index, u32 frame_index, bool begin ) {
-    CommandBuffer* cb = command_buffer_ring.get_command_buffer( frame_index, thread_index, begin );
+CommandBuffer* GpuDevice::get_command_buffer( u32 thread_index, u32 frame_index, bool begin, bool compute /*= false*/ ) {
+    CommandBuffer* cb = command_buffer_ring.get_command_buffer( frame_index, thread_index, begin, compute );
     return cb;
 }
 

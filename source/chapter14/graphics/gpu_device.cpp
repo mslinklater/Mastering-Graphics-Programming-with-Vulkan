@@ -241,6 +241,32 @@ static const u32        k_bindless_texture_binding = 10;
 static const u32        k_bindless_image_binding = 11;
 static const u32        k_max_bindless_resources = 1024;
 
+bool GpuDevice::get_family_queue( VkPhysicalDevice physical_device ) {
+    u32 queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr );
+
+    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof( VkQueueFamilyProperties ) * queue_family_count, allocator );
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families );
+
+    u32 family_index = 0;
+    VkBool32 surface_supported;
+    for ( ; family_index < queue_family_count; ++family_index ) {
+        VkQueueFamilyProperties queue_family = queue_families[ family_index ];
+        if ( queue_family.queueCount > 0 && queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT ) ) {
+            vkGetPhysicalDeviceSurfaceSupportKHR( physical_device, family_index, vulkan_window_surface, &surface_supported);
+
+            if ( surface_supported ) {
+                vulkan_main_queue_family = family_index;
+                break;
+            }
+        }
+    }
+
+    rfree( queue_families, allocator );
+
+    return surface_supported;
+}
+
 void GpuDevice::init( const GpuDeviceCreation& creation ) {
 
     rprint( "Gpu Device init\n" );
@@ -325,6 +351,15 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     result = vkEnumeratePhysicalDevices( vulkan_instance, &num_physical_device, gpus );
     check( result );
 
+    //////// Create drawable surface
+    // Create surface
+    SDL_Window* window = ( SDL_Window* )creation.window;
+    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
+        rprint( "Failed to create Vulkan surface.\n" );
+    }
+
+    sdl_window = window;
+
     VkPhysicalDevice discrete_gpu = VK_NULL_HANDLE;
     VkPhysicalDevice integrated_gpu = VK_NULL_HANDLE;
     for ( u32 i = 0; i < num_physical_device; ++i ) {
@@ -332,12 +367,21 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         vkGetPhysicalDeviceProperties( physical_device, &vulkan_physical_properties );
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ) {
-            discrete_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                // NOTE(marco): prefer discrete GPU over integrated one, stop at first discrete GPU that has
+                // present capabilities
+                discrete_gpu = physical_device;
+                break;
+            }
+
             continue;
         }
 
         if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ) {
-            integrated_gpu = physical_device;
+            if ( get_family_queue( physical_device ) ) {
+                integrated_gpu = physical_device;
+            }
+
             continue;
         }
     }
@@ -486,7 +530,7 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
 #endif // DEBUG
 
         // Search for main queue that should be able to do all work (graphics, compute and transfer)
-        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT ) ) {
+        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  ) ) {
             main_queue_family_index = fi;
 
             RASSERT( ( queue_family.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT ) == VK_QUEUE_SPARSE_BINDING_BIT );
@@ -733,15 +777,6 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     if ( vulkan_transfer_queue_family < queue_family_count ) {
         vkGetDeviceQueue( vulkan_device, transfer_queue_family_index, 0, &vulkan_transfer_queue );
     }
-
-    //////// Create drawable surface
-    // Create surface
-    SDL_Window* window = ( SDL_Window* )creation.window;
-    if ( SDL_Vulkan_CreateSurface( window, vulkan_instance, &vulkan_window_surface ) == SDL_FALSE ) {
-        rprint( "Failed to create Vulkan surface.\n" );
-    }
-
-    sdl_window = window;
 
     // Create Framebuffers
     int window_width, window_height;
@@ -3359,8 +3394,6 @@ void GpuDevice::create_swapchain() {
         }
 
         util_add_image_barrier( this, command_buffer->vk_command_buffer, color->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_PRESENT, 0, 1, false );
-
-        util_add_image_barrier( this, command_buffer->vk_command_buffer, depth_stencil_texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_PRESENT, 0, 1, true );
     }
 
     vkEndCommandBuffer( command_buffer->vk_command_buffer );
@@ -3590,7 +3623,7 @@ void GpuDevice::resize_texture_3d( TextureHandle texture, u32 width, u32 height,
     // Update handle so it can be used to update bindless to dummy texture
     // and delete the old image and image view.
     vk_texture_to_delete->handle = texture_to_delete;
-    
+
     // Re-create image in place.
     TextureCreation tc;
     tc.set_flags( vk_texture->flags ).set_format_type( vk_texture->vk_format, vk_texture->type )
@@ -3903,6 +3936,100 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
         command_buffer->current_render_pass = nullptr;
     }
 
+    if ( texture_to_update_bindless.size ) {
+        // Handle deferred writes to bindless textures.
+        VkWriteDescriptorSet bindless_descriptor_writes[ k_max_bindless_resources ];
+        VkDescriptorImageInfo bindless_image_info[ k_max_bindless_resources ];
+
+        Texture* vk_dummy_texture = access_texture( dummy_texture );
+
+        u32 current_write_index = 0;
+        for ( i32 it = texture_to_update_bindless.size - 1; it >= 0; it-- ) {
+            ResourceUpdate& texture_to_update = texture_to_update_bindless[ it ];
+
+            //if ( texture_to_update.current_frame == current_frame )
+            {
+                Texture* texture = access_texture( { texture_to_update.handle } );
+
+                if ( texture->vk_image_view == VK_NULL_HANDLE ) {
+                    continue;
+                }
+
+                VkWriteDescriptorSet& descriptor_write = bindless_descriptor_writes[ current_write_index ];
+                descriptor_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                descriptor_write.descriptorCount = 1;
+                descriptor_write.dstArrayElement = texture_to_update.handle;
+                descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                descriptor_write.dstSet = vulkan_bindless_descriptor_set_cached;
+                descriptor_write.dstBinding = k_bindless_texture_binding;
+
+                // Handles should be the same.
+                RASSERT( texture->handle.index == texture_to_update.handle );
+
+                Sampler* vk_default_sampler = access_sampler( default_sampler );
+                VkDescriptorImageInfo& descriptor_image_info = bindless_image_info[ current_write_index ];
+
+                // Update image view and sampler if valid
+                if ( !texture_to_update.deleting ) {
+                    descriptor_image_info.imageView = texture->vk_image_view;
+
+                    if ( texture->sampler != nullptr ) {
+                        descriptor_image_info.sampler = texture->sampler->vk_sampler;
+                    } else {
+                        descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
+                    }
+                }
+                else {
+                    // Deleting: set to default image view and sampler in the current slot.
+                    descriptor_image_info.imageView = vk_dummy_texture->vk_image_view;
+                    descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
+                }
+
+                descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                descriptor_write.pImageInfo = &descriptor_image_info;
+
+                texture_to_update.current_frame = u32_max;
+                // Cache this value, as delete_swap will modify the texture_to_update reference.
+                const bool add_texture_to_delete = texture_to_update.deleting;
+                texture_to_update_bindless.delete_swap( it );
+
+                ++current_write_index;
+
+                // Debug
+                //if ( strcmp("", texture->name) == 0 ) {
+                    //rprint( "%s texture %u\n", add_texture_to_delete ? "Deleting" : "Updating", texture->handle.index );
+                //}
+
+                // Add texture to delete
+                if ( add_texture_to_delete ) {
+                    resource_deletion_queue.push( { ResourceUpdateType::Texture, texture->handle.index, current_frame, 1 } );
+                }
+
+                // Add optional compute bindless descriptor update
+                if ( texture->flags & TextureFlags::Compute_mask ) {
+                    VkWriteDescriptorSet& descriptor_write_image = bindless_descriptor_writes[ current_write_index ];
+                    VkDescriptorImageInfo& descriptor_image_info_compute = bindless_image_info[ current_write_index ];
+
+                    // Copy common data from descriptor and image info
+                    descriptor_write_image = descriptor_write;
+                    descriptor_image_info_compute = descriptor_image_info;
+
+                    descriptor_image_info_compute.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+                    descriptor_write_image.dstBinding = k_bindless_image_binding;
+                    descriptor_write_image.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                    descriptor_write_image.pImageInfo = &descriptor_image_info_compute;
+
+                    ++current_write_index;
+                }
+            }
+        }
+
+        if ( current_write_index ) {
+            vkUpdateDescriptorSets( vulkan_device, current_write_index, bindless_descriptor_writes, 0, nullptr );
+        }
+    }
+
     // Submit command buffers
 
     bool has_pending_sparse_bindings = pending_sparse_memory_info.size > 0;
@@ -4204,106 +4331,6 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
 
     // This is called inside resize_swapchain as well to correctly work.
     frame_counters_advance();
-
-    if ( texture_to_update_bindless.size ) {
-        // Handle deferred writes to bindless textures.
-        static constexpr u32 k_num_writes_per_frame = 24;
-        VkWriteDescriptorSet bindless_descriptor_writes[ k_num_writes_per_frame ];
-        VkDescriptorImageInfo bindless_image_info[ k_num_writes_per_frame ];
-
-        Texture* vk_dummy_texture = access_texture( dummy_texture );
-
-        u32 current_write_index = 0;
-        for ( i32 it = texture_to_update_bindless.size - 1; it >= 0; it-- ) {
-            ResourceUpdate& texture_to_update = texture_to_update_bindless[ it ];
-
-            //if ( texture_to_update.current_frame == current_frame )
-            {
-                Texture* texture = access_texture( { texture_to_update.handle } );
-
-                if ( texture->vk_image_view == VK_NULL_HANDLE ) {
-                    continue;
-                }
-
-                // Check that necessary descriptors are available, otherwise finish for this frame.
-                const u32 needed_descriptors = ( texture->flags & TextureFlags::Compute_mask ) ? 2 : 1;
-                if ( current_write_index + needed_descriptors >= k_num_writes_per_frame - 1 )
-                    break;
-
-                VkWriteDescriptorSet& descriptor_write = bindless_descriptor_writes[ current_write_index ];
-                descriptor_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-                descriptor_write.descriptorCount = 1;
-                descriptor_write.dstArrayElement = texture_to_update.handle;
-                descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                descriptor_write.dstSet = vulkan_bindless_descriptor_set_cached;
-                descriptor_write.dstBinding = k_bindless_texture_binding;
-
-                // Handles should be the same.
-                RASSERT( texture->handle.index == texture_to_update.handle );
-
-                Sampler* vk_default_sampler = access_sampler( default_sampler );
-                VkDescriptorImageInfo& descriptor_image_info = bindless_image_info[ current_write_index ];
-
-                // Update image view and sampler if valid
-                if ( !texture_to_update.deleting ) {
-                    descriptor_image_info.imageView = texture->vk_image_view;
-
-                    if ( texture->sampler != nullptr ) {
-                        descriptor_image_info.sampler = texture->sampler->vk_sampler;
-                    } else {
-                        descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
-                    }
-                }
-                else {
-                    // Deleting: set to default image view and sampler in the current slot.
-                    descriptor_image_info.imageView = vk_dummy_texture->vk_image_view;
-                    descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
-                }
-
-                descriptor_image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                descriptor_write.pImageInfo = &descriptor_image_info;
-
-                texture_to_update.current_frame = u32_max;
-                // Cache this value, as delete_swap will modify the texture_to_update reference.
-                const bool add_texture_to_delete = texture_to_update.deleting;
-                texture_to_update_bindless.delete_swap( it );
-
-                ++current_write_index;
-
-                // Debug
-                //if ( strcmp("", texture->name) == 0 ) {
-                    //rprint( "%s texture %u\n", add_texture_to_delete ? "Deleting" : "Updating", texture->handle.index );
-                //}
-
-                // Add texture to delete
-                if ( add_texture_to_delete ) {
-                    resource_deletion_queue.push( { ResourceUpdateType::Texture, texture->handle.index, current_frame, 1 } );
-                }
-
-                // Add optional compute bindless descriptor update
-                if ( texture->flags & TextureFlags::Compute_mask ) {
-                    VkWriteDescriptorSet& descriptor_write_image = bindless_descriptor_writes[ current_write_index ];
-                    VkDescriptorImageInfo& descriptor_image_info_compute = bindless_image_info[ current_write_index ];
-
-                    // Copy common data from descriptor and image info
-                    descriptor_write_image = descriptor_write;
-                    descriptor_image_info_compute = descriptor_image_info;
-
-                    descriptor_image_info_compute.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-                    descriptor_write_image.dstBinding = k_bindless_image_binding;
-                    descriptor_write_image.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                    descriptor_write_image.pImageInfo = &descriptor_image_info_compute;
-
-                    ++current_write_index;
-                }
-            }
-        }
-
-        if ( current_write_index ) {
-            vkUpdateDescriptorSets( vulkan_device, current_write_index, bindless_descriptor_writes, 0, nullptr );
-        }
-    }
 
     // Resource deletion using reverse iteration and swap with last element.
     if ( resource_deletion_queue.size > 0 ) {
