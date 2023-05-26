@@ -100,7 +100,8 @@ struct Transform {
     vec3s                   translation;
 
     void                    reset();
-    mat4s                   calculate_matrix() const {
+    mat4s                   calculate_matrix() const 
+	{
         const mat4s translation_matrix = glms_translate_make( translation );
         const mat4s scale_matrix = glms_scale_make( scale );
         const mat4s local_matrix = glms_mat4_mul( glms_mat4_mul( translation_matrix, glms_quat_mat4( rotation ) ), scale_matrix );
@@ -108,26 +109,31 @@ struct Transform {
     }
 }; // struct Transform
 
-static void input_os_messages_callback( void* os_event, void* user_data ) {
+static void input_os_messages_callback( void* os_event, void* user_data ) 
+{
     raptor::InputService* input = ( raptor::InputService* )user_data;
     input->on_event( os_event );
 }
 
-static u8* get_buffer_data( raptor::glTF::BufferView* buffer_views, u32 buffer_index, raptor::Array<void*>& buffers_data, u32* buffer_size = nullptr, char** buffer_name = nullptr ) {
+static u8* get_buffer_data( raptor::glTF::BufferView* buffer_views, u32 buffer_index, raptor::Array<void*>& buffers_data, u32* buffer_size = nullptr, char** buffer_name = nullptr ) 
+{
     using namespace raptor;
 
     glTF::BufferView& buffer = buffer_views[ buffer_index ];
 
     i32 offset = buffer.byte_offset;
-    if ( offset == glTF::INVALID_INT_VALUE ) {
+    if ( offset == glTF::INVALID_INT_VALUE ) 
+	{
         offset = 0;
     }
 
-    if ( buffer_name != nullptr ) {
+    if ( buffer_name != nullptr ) 
+	{
         *buffer_name = buffer.name.data;
     }
 
-    if ( buffer_size != nullptr ) {
+    if ( buffer_size != nullptr ) 
+	{
         *buffer_size = buffer.byte_length;
     }
 
@@ -136,9 +142,10 @@ static u8* get_buffer_data( raptor::glTF::BufferView* buffer_views, u32 buffer_i
     return data;
 }
 
-int main( int argc, char** argv ) {
-
-    if ( argc < 2 ) {
+int main( int argc, char** argv ) 
+{
+    if ( argc < 2 ) 
+	{
         printf( "Usage: chapter1 [path to glTF model]\n");
         InjectDefault3DModel();
     }
@@ -166,22 +173,24 @@ int main( int argc, char** argv ) {
 
     // graphics
     DeviceCreation dc;
-    dc.set_window( window.width, window.height, window.platform_handle ).set_allocator( allocator ).set_linear_allocator( &scratch_allocator );
-    GpuDevice gpu;
-    gpu.init( dc );
+    dc.set_window( window.width, window.height, window.platform_handle )
+		.set_allocator( allocator )
+		.set_linear_allocator( &scratch_allocator );
+    GpuDevice gpu_device;
+    gpu_device.init( dc );
 
-    ResourceManager rm;
-    rm.init( allocator, nullptr );
+    ResourceManager resource_manager;
+    resource_manager.init( allocator, nullptr );
 
     GPUProfiler gpu_profiler;
     gpu_profiler.init( allocator, 100 );
 
     Renderer renderer;
-    renderer.init( { &gpu, allocator } );
-    renderer.set_loaders( &rm );
+    renderer.init( { &gpu_device, allocator } );
+    renderer.set_loaders( &resource_manager );
 
     ImGuiService* imgui = ImGuiService::instance();
-    ImGuiServiceConfiguration imgui_config{ &gpu, window.platform_handle };
+    ImGuiServiceConfiguration imgui_config{ &gpu_device, window.platform_handle };
     imgui->init( &imgui_config );
 
     Directory cwd{ };
@@ -202,7 +211,8 @@ int main( int argc, char** argv ) {
     Array<TextureResource> images;
     images.init( allocator, scene.images_count );
 
-    for ( u32 image_index = 0; image_index < scene.images_count; ++image_index ) {
+    for ( u32 image_index = 0; image_index < scene.images_count; ++image_index ) 
+	{
         glTF::Image& image = scene.images[ image_index ];
         TextureResource* tr = renderer.create_texture( image.uri.data, image.uri.data );
         RASSERT( tr != nullptr );
@@ -213,14 +223,14 @@ int main( int argc, char** argv ) {
     TextureCreation texture_creation{ };
     u32 zero_value = 0;
     texture_creation.set_name( "dummy_texture" ).set_size( 1, 1, 1 ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_flags( 1, 0 ).set_data( &zero_value );
-    TextureHandle dummy_texture = gpu.create_texture( texture_creation );
+    TextureHandle dummy_texture = gpu_device.create_texture( texture_creation );
 
     SamplerCreation sampler_creation{ };
     sampler_creation.min_filter = VK_FILTER_LINEAR;
     sampler_creation.mag_filter = VK_FILTER_LINEAR;
     sampler_creation.address_mode_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_creation.address_mode_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    SamplerHandle dummy_sampler = gpu.create_sampler( sampler_creation );
+    SamplerHandle dummy_sampler = gpu_device.create_sampler( sampler_creation );
 
     StringBuffer resource_name_buffer;
     resource_name_buffer.init( rkilo( 64 ), allocator );
@@ -289,10 +299,11 @@ int main( int argc, char** argv ) {
 
     vec4s dummy_data[ 3 ]{ };
     BufferCreation buffer_creation{ };
-    buffer_creation.set( VK_BUFFER_USAGE_VERTEX_BUFFER_BIT , ResourceUsageType::Immutable, sizeof( vec4s ) * 3 ).set_data( dummy_data ).set_name( "dummy_attribute_buffer" );
+    buffer_creation.set( VK_BUFFER_USAGE_VERTEX_BUFFER_BIT , ResourceUsageType::Immutable, sizeof( vec4s ) * 3 )
+		.set_data( dummy_data )
+		.set_name( "dummy_attribute_buffer" );
 
-    BufferHandle dummy_attribute_buffer = gpu.create_buffer( buffer_creation );
-
+    BufferHandle dummy_attribute_buffer = gpu_device.create_buffer( buffer_creation );
     {
         // Create pipeline state
         PipelineCreation pipeline_creation;
@@ -312,7 +323,7 @@ int main( int argc, char** argv ) {
         pipeline_creation.vertex_input.add_vertex_stream( { 3, 8, VertexInputRate::PerVertex} );
 
         // Render pass
-        pipeline_creation.render_pass = gpu.get_swapchain_output();
+        pipeline_creation.render_pass = gpu_device.get_swapchain_output();
         // Depth
         pipeline_creation.depth_stencil.set_depth( true, VK_COMPARE_OP_LESS_OR_EQUAL );
 
@@ -597,15 +608,15 @@ void main() {
         cube_rll_creation.add_binding( { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5, 1, "emissiveTexture" } );
         cube_rll_creation.add_binding( { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6, 1, "occlusionTexture" } );
         // Setting it into pipeline
-        cube_dsl = gpu.create_descriptor_set_layout( cube_rll_creation );
+        cube_dsl = gpu_device.create_descriptor_set_layout( cube_rll_creation );
         pipeline_creation.add_descriptor_set_layout( cube_dsl );
 
         // Constant buffer
         BufferCreation buffer_creation;
         buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( UniformData ) ).set_name( "cube_cb" );
-        cube_cb = gpu.create_buffer( buffer_creation );
+        cube_cb = gpu_device.create_buffer( buffer_creation );
 
-        cube_pipeline = gpu.create_pipeline( pipeline_creation );
+        cube_pipeline = gpu_device.create_pipeline( pipeline_creation );
 
         glTF::Scene& root_gltf_scene = scene.scenes[ scene.scene ];
 
@@ -618,39 +629,46 @@ void main() {
         Array<mat4s> node_matrix;
         node_matrix.init( allocator, scene.nodes_count, scene.nodes_count );
 
-        for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) {
+        for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) 
+		{
             u32 root_node = root_gltf_scene.nodes[ node_index ];
             node_parents[ root_node ] = -1;
             node_stack.push( root_node );
         }
 
-        while ( node_stack.size ) {
+        while ( node_stack.size ) 
+		{
             u32 node_index = node_stack.back();
             node_stack.pop();
             glTF::Node& node = scene.nodes[ node_index ];
 
             mat4s local_matrix{ };
 
-            if ( node.matrix_count ) {
+            if ( node.matrix_count ) 
+			{
                 // CGLM and glTF have the same matrix layout, just memcopy it
                 memcpy( &local_matrix, node.matrix, sizeof( mat4s ) );
             }
-            else {
+            else 
+			{
                 vec3s node_scale{ 1.0f, 1.0f, 1.0f };
-                if ( node.scale_count != 0 ) {
+                if ( node.scale_count != 0 ) 
+				{
                     RASSERT( node.scale_count == 3 );
                     node_scale = vec3s{ node.scale[0], node.scale[1], node.scale[2] };
                 }
 
                 vec3s node_translation{ 0.f, 0.f, 0.f };
-                if ( node.translation_count ) {
+                if ( node.translation_count ) 
+				{
                     RASSERT( node.translation_count == 3 );
                     node_translation = vec3s{ node.translation[ 0 ], node.translation[ 1 ], node.translation[ 2 ] };
                 }
 
                 // Rotation is written as a plain quaternion
                 versors node_rotation = glms_quat_identity();
-                if ( node.rotation_count ) {
+                if ( node.rotation_count ) 
+				{
                     RASSERT( node.rotation_count == 4 );
                     node_rotation = glms_quat_init( node.rotation[ 0 ], node.rotation[ 1 ], node.rotation[ 2 ], node.rotation[ 3 ] );
                 }
@@ -665,13 +683,15 @@ void main() {
 
             node_matrix[ node_index ] = local_matrix;
 
-            for ( u32 child_index = 0; child_index < node.children_count; ++child_index ) {
+            for ( u32 child_index = 0; child_index < node.children_count; ++child_index ) 
+			{
                 u32 child_node_index = node.children[ child_index ];
                 node_parents[ child_node_index ] = node_index;
                 node_stack.push( child_node_index );
             }
 
-            if ( node.mesh == glTF::INVALID_INT_VALUE ) {
+            if ( node.mesh == glTF::INVALID_INT_VALUE ) 
+			{
                 continue;
             }
 
@@ -679,13 +699,15 @@ void main() {
 
             mat4s final_matrix = local_matrix;
             i32 node_parent = node_parents[ node_index ];
-            while( node_parent != -1 ) {
+            while( node_parent != -1 ) 
+			{
                 final_matrix = glms_mat4_mul( node_matrix[ node_parent ], final_matrix );
                 node_parent = node_parents[ node_parent ];
             }
 
             // Final SRT composition
-            for ( u32 primitive_index = 0; primitive_index < mesh.primitives_count; ++primitive_index ) {
+            for ( u32 primitive_index = 0; primitive_index < mesh.primitives_count; ++primitive_index ) 
+			{
                 MeshDraw mesh_draw{ };
 
                 mesh_draw.material_data.model = final_matrix;
@@ -713,7 +735,8 @@ void main() {
                 u16* index_data_16 = ( u16* )index_data_32;
                 u32 vertex_count = 0;
 
-                if ( position_accessor_index != -1 ) {
+                if ( position_accessor_index != -1 ) 
+				{
                     glTF::Accessor& position_accessor = scene.accessors[ position_accessor_index ];
                     glTF::BufferView& position_buffer_view = scene.buffer_views[ position_accessor.buffer_view ];
                     BufferResource& position_buffer_gpu = buffers[ position_accessor.buffer_view ];
@@ -724,26 +747,32 @@ void main() {
                     mesh_draw.position_offset = position_accessor.byte_offset == glTF::INVALID_INT_VALUE ? 0 : position_accessor.byte_offset;
 
                     position_data = ( vec3s* )get_buffer_data( scene.buffer_views, position_accessor.buffer_view, buffers_data );
-                } else {
+                } 
+				else 
+				{
                     RASSERTM( false, "No position data found!" );
                     continue;
                 }
 
-                if ( normal_accessor_index != -1 ) {
+                if ( normal_accessor_index != -1 ) 
+				{
                     glTF::Accessor& normal_accessor = scene.accessors[ normal_accessor_index ];
                     glTF::BufferView& normal_buffer_view = scene.buffer_views[ normal_accessor.buffer_view ];
                     BufferResource& normal_buffer_gpu = buffers[ normal_accessor.buffer_view ];
 
                     mesh_draw.normal_buffer = normal_buffer_gpu.handle;
                     mesh_draw.normal_offset = normal_accessor.byte_offset == glTF::INVALID_INT_VALUE ? 0 : normal_accessor.byte_offset;
-                } else {
+                } 
+				else 
+				{
                     // NOTE(marco): we could compute this at runtime
                     Array<vec3s> normals_array{ };
                     normals_array.init( allocator, vertex_count, vertex_count );
                     memset( normals_array.data, 0, normals_array.size * sizeof( vec3s ) );
 
                     u32 index_count = mesh_draw.count;
-                    for ( u32 index = 0; index < index_count; index += 3 ) {
+                    for ( u32 index = 0; index < index_count; index += 3 ) 
+					{
                         u32 i0 = indices_accessor.component_type == glTF::Accessor::UNSIGNED_INT ? index_data_32[ index ] : index_data_16[ index ];
                         u32 i1 = indices_accessor.component_type == glTF::Accessor::UNSIGNED_INT ? index_data_32[ index + 1 ] : index_data_16[ index + 1 ];
                         u32 i2 = indices_accessor.component_type == glTF::Accessor::UNSIGNED_INT ? index_data_32[ index + 2 ] : index_data_16[ index + 2 ];
@@ -762,14 +791,15 @@ void main() {
                         normals_array[ i2 ] = glms_vec3_add( normals_array[ i2 ], normal );
                     }
 
-                    for ( u32 vertex = 0; vertex < vertex_count; ++vertex ) {
+                    for ( u32 vertex = 0; vertex < vertex_count; ++vertex ) 
+					{
                         normals_array[ vertex ] = glms_normalize( normals_array[ vertex ] );
                     }
 
                     BufferCreation normals_creation{ };
                     normals_creation.set( VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, ResourceUsageType::Immutable, normals_array.size * sizeof( vec3s ) ).set_name( "normals" ).set_data( normals_array.data );
 
-                    mesh_draw.normal_buffer = gpu.create_buffer( normals_creation );
+                    mesh_draw.normal_buffer = gpu_device.create_buffer( normals_creation );
                     mesh_draw.normal_offset = 0;
 
                     custom_mesh_buffers.push( mesh_draw.normal_buffer );
@@ -777,7 +807,8 @@ void main() {
                     normals_array.shutdown();
                 }
 
-                if ( tangent_accessor_index != -1 ) {
+                if ( tangent_accessor_index != -1 ) 
+				{
                     glTF::Accessor& tangent_accessor = scene.accessors[ tangent_accessor_index ];
                     glTF::BufferView& tangent_buffer_view = scene.buffer_views[ tangent_accessor.buffer_view ];
                     BufferResource& tangent_buffer_gpu = buffers[ tangent_accessor.buffer_view ];
@@ -788,7 +819,8 @@ void main() {
                     mesh_draw.material_data.flags |= MaterialFeatures_TangentVertexAttribute;
                 }
 
-                if ( texcoord_accessor_index != -1 ) {
+                if ( texcoord_accessor_index != -1 ) 
+				{
                     glTF::Accessor& texcoord_accessor = scene.accessors[ texcoord_accessor_index ];
                     glTF::BufferView& texcoord_buffer_view = scene.buffer_views[ texcoord_accessor.buffer_view ];
                     BufferResource& texcoord_buffer_gpu = buffers[ texcoord_accessor.buffer_view ];
@@ -807,11 +839,13 @@ void main() {
                 ds_creation.set_layout( cube_dsl ).buffer( cube_cb, 0 );
 
                 buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( MaterialData ) ).set_name( "material" );
-                mesh_draw.material_buffer = gpu.create_buffer( buffer_creation );
+                mesh_draw.material_buffer = gpu_device.create_buffer( buffer_creation );
                 ds_creation.buffer( mesh_draw.material_buffer, 1 );
 
-                if ( material.pbr_metallic_roughness != nullptr ) {
-                    if ( material.pbr_metallic_roughness->base_color_factor_count != 0 ) {
+                if ( material.pbr_metallic_roughness != nullptr ) 
+				{
+                    if ( material.pbr_metallic_roughness->base_color_factor_count != 0 ) 
+					{
                         RASSERT( material.pbr_metallic_roughness->base_color_factor_count == 4 );
 
                         mesh_draw.material_data.base_color_factor = {
@@ -820,56 +854,73 @@ void main() {
                             material.pbr_metallic_roughness->base_color_factor[2],
                             material.pbr_metallic_roughness->base_color_factor[3],
                         };
-                    } else {
+                    } 
+					else 
+					{
                         mesh_draw.material_data.base_color_factor = { 1.0f, 1.0f, 1.0f, 1.0f };
                     }
 
-                    if ( material.pbr_metallic_roughness->base_color_texture != nullptr ) {
+                    if ( material.pbr_metallic_roughness->base_color_texture != nullptr ) 
+					{
                         glTF::Texture& diffuse_texture = scene.textures[ material.pbr_metallic_roughness->base_color_texture->index ];
                         TextureResource& diffuse_texture_gpu = images[ diffuse_texture.source ];
 
                         SamplerHandle sampler_handle = dummy_sampler;
-                        if ( diffuse_texture.sampler != glTF::INVALID_INT_VALUE ) {
+                        if ( diffuse_texture.sampler != glTF::INVALID_INT_VALUE ) 
+						{
                             sampler_handle = samplers[ diffuse_texture.sampler ].handle;
                         }
 
                         ds_creation.texture_sampler( diffuse_texture_gpu.handle, sampler_handle, 2 );
 
                         mesh_draw.material_data.flags |= MaterialFeatures_ColorTexture;
-                    } else {
+                    } 
+					else 
+					{
                         ds_creation.texture_sampler( dummy_texture, dummy_sampler, 2 );
                     }
 
-                    if ( material.pbr_metallic_roughness->metallic_roughness_texture != nullptr ) {
+                    if ( material.pbr_metallic_roughness->metallic_roughness_texture != nullptr ) 
+					{
                         glTF::Texture& roughness_texture = scene.textures[ material.pbr_metallic_roughness->metallic_roughness_texture->index ];
                         TextureResource& roughness_texture_gpu = images[ roughness_texture.source ];
 
                         SamplerHandle sampler_handle = dummy_sampler;
-                        if ( roughness_texture.sampler != glTF::INVALID_INT_VALUE ) {
+                        if ( roughness_texture.sampler != glTF::INVALID_INT_VALUE ) 
+						{
                             sampler_handle = samplers[ roughness_texture.sampler ].handle;
                         }
 
                         ds_creation.texture_sampler( roughness_texture_gpu.handle, sampler_handle, 3 );
 
                         mesh_draw.material_data.flags |= MaterialFeatures_RoughnessTexture;
-                    } else {
+                    } 
+					else 
+					{
                         ds_creation.texture_sampler( dummy_texture, dummy_sampler, 3 );
                     }
 
-                    if ( material.pbr_metallic_roughness->metallic_factor != glTF::INVALID_FLOAT_VALUE ) {
+                    if ( material.pbr_metallic_roughness->metallic_factor != glTF::INVALID_FLOAT_VALUE ) 
+					{
                         mesh_draw.material_data.metallic_factor = material.pbr_metallic_roughness->metallic_factor;
-                    } else {
+                    } 
+					else 
+					{
                         mesh_draw.material_data.metallic_factor = 1.0f;
                     }
 
-                    if ( material.pbr_metallic_roughness->roughness_factor != glTF::INVALID_FLOAT_VALUE ) {
+                    if ( material.pbr_metallic_roughness->roughness_factor != glTF::INVALID_FLOAT_VALUE ) 
+					{
                         mesh_draw.material_data.roughness_factor = material.pbr_metallic_roughness->roughness_factor;
-                    } else {
+                    } 
+					else 
+					{
                         mesh_draw.material_data.roughness_factor = 1.0f;
                     }
                 }
 
-                if ( material.occlusion_texture != nullptr ) {
+                if ( material.occlusion_texture != nullptr ) 
+				{
                     glTF::Texture& occlusion_texture = scene.textures[ material.occlusion_texture->index ];
 
                     // NOTE(marco): this could be the same as the roughness texture, but for now we treat it as a separate
@@ -877,7 +928,8 @@ void main() {
                     TextureResource& occlusion_texture_gpu = images[ occlusion_texture.source ];
 
                     SamplerHandle sampler_handle = dummy_sampler;
-                    if ( occlusion_texture.sampler != glTF::INVALID_INT_VALUE ) {
+                    if ( occlusion_texture.sampler != glTF::INVALID_INT_VALUE ) 
+					{
                         sampler_handle = samplers[ occlusion_texture.sampler ].handle;
                     }
 
@@ -885,12 +937,15 @@ void main() {
 
                     mesh_draw.material_data.occlusion_factor = material.occlusion_texture->strength != glTF::INVALID_FLOAT_VALUE ? material.occlusion_texture->strength : 1.0f;
                     mesh_draw.material_data.flags |= MaterialFeatures_OcclusionTexture;
-                } else {
+                } 
+				else 
+				{
                     mesh_draw.material_data.occlusion_factor = 1.0f;
                     ds_creation.texture_sampler( dummy_texture, dummy_sampler, 4 );
                 }
 
-                if ( material.emissive_factor_count != 0 ) {
+                if ( material.emissive_factor_count != 0 ) 
+				{
                     mesh_draw.material_data.emissive_factor = vec3s{
                         material.emissive_factor[ 0 ],
                         material.emissive_factor[ 1 ],
@@ -898,7 +953,8 @@ void main() {
                     };
                 }
 
-                if ( material.emissive_texture != nullptr ) {
+                if ( material.emissive_texture != nullptr ) 
+				{
                     glTF::Texture& emissive_texture = scene.textures[ material.emissive_texture->index ];
 
                     // NOTE(marco): this could be the same as the roughness texture, but for now we treat it as a separate
@@ -906,34 +962,41 @@ void main() {
                     TextureResource& emissive_texture_gpu = images[ emissive_texture.source ];
 
                     SamplerHandle sampler_handle = dummy_sampler;
-                    if ( emissive_texture.sampler != glTF::INVALID_INT_VALUE ) {
+                    if ( emissive_texture.sampler != glTF::INVALID_INT_VALUE ) 
+					{
                         sampler_handle = samplers[ emissive_texture.sampler ].handle;
                     }
 
                     ds_creation.texture_sampler( emissive_texture_gpu.handle, sampler_handle, 5 );
 
                     mesh_draw.material_data.flags |= MaterialFeatures_EmissiveTexture;
-                } else {
+                } 
+				else 
+				{
                     ds_creation.texture_sampler( dummy_texture, dummy_sampler, 5 );
                 }
 
-                if ( material.normal_texture != nullptr ) {
+                if ( material.normal_texture != nullptr ) 
+				{
                     glTF::Texture& normal_texture = scene.textures[ material.normal_texture->index ];
                     TextureResource& normal_texture_gpu = images[ normal_texture.source ];
 
                     SamplerHandle sampler_handle = dummy_sampler;
-                    if ( normal_texture.sampler != glTF::INVALID_INT_VALUE ) {
+                    if ( normal_texture.sampler != glTF::INVALID_INT_VALUE ) 
+					{
                         sampler_handle = samplers[ normal_texture.sampler ].handle;
                     }
 
                     ds_creation.texture_sampler( normal_texture_gpu.handle, sampler_handle, 6 );
 
                     mesh_draw.material_data.flags |= MaterialFeatures_NormalTexture;
-                } else {
+                } 
+				else 
+				{
                     ds_creation.texture_sampler( dummy_texture, dummy_sampler, 6 );
                 }
 
-                mesh_draw.descriptor_set = gpu.create_descriptor_set( ds_creation );
+                mesh_draw.descriptor_set = gpu_device.create_descriptor_set( ds_creation );
 
                 mesh_draws.push( mesh_draw );
             }
@@ -947,7 +1010,8 @@ void main() {
         ry = 0.0f;
     }
 
-    for ( u32 buffer_index = 0; buffer_index < scene.buffers_count; ++buffer_index ) {
+    for ( u32 buffer_index = 0; buffer_index < scene.buffers_count; ++buffer_index ) 
+	{
         void* buffer = buffers_data[ buffer_index ];
         allocator->deallocate( buffer );
     }
@@ -964,21 +1028,24 @@ void main() {
 
     float model_scale = 1.0f;
 
-    while ( !window.requested_exit ) {
+    while ( !window.requested_exit ) 
+	{
         ZoneScoped;
 
         // New frame
-        if ( !window.minimized ) {
-            gpu.new_frame();
+        if ( !window.minimized ) 
+		{
+            gpu_device.new_frame();
         }
         //input->new_frame();
 
         window.handle_os_messages();
 
-        if ( window.resized ) {
+        if ( window.resized ) 
+		{
             //renderer->resize_swapchain( window.width, window.height );
             //on_resize( window.width, window.height );
-            gpu.resize( window.width, window.height );
+            gpu_device.resize( window.width, window.height );
             window.resized = false;
         }
         // This MUST be AFTER os messages!
@@ -991,12 +1058,14 @@ void main() {
         input_handler.new_frame();
         input_handler.update( delta_time );
 
-        if ( ImGui::Begin( "Raptor ImGui" ) ) {
+        if ( ImGui::Begin( "Raptor ImGui" ) ) 
+		{
             ImGui::InputFloat("Model scale", &model_scale, 0.001f);
         }
         ImGui::End();
 
-        if ( ImGui::Begin( "GPU" ) ) {
+        if ( ImGui::Begin( "GPU" ) ) 
+		{
             gpu_profiler.imgui_draw();
         }
         ImGui::End();
@@ -1005,15 +1074,20 @@ void main() {
         {
             // Update rotating cube gpu data
             MapBufferParameters cb_map = { cube_cb, 0, 0 };
-            float* cb_data = ( float* )gpu.map_buffer( cb_map );
-            if ( cb_data ) {
-                if ( input_handler.is_mouse_down( MouseButtons::MOUSE_BUTTONS_LEFT ) && !ImGui::GetIO().WantCaptureMouse) {
+
+            float* cb_data = ( float* )gpu_device.map_buffer( cb_map );
+
+            if ( cb_data ) 
+			{
+                if ( input_handler.is_mouse_down( MouseButtons::MOUSE_BUTTONS_LEFT ) && !ImGui::GetIO().WantCaptureMouse) 
+				{
                     pitch += ( input_handler.mouse_position.y - input_handler.previous_mouse_position.y ) * 0.1f;
                     yaw += ( input_handler.mouse_position.x - input_handler.previous_mouse_position.x ) * 0.3f;
 
                     pitch = clamp( pitch, -60.0f, 60.0f );
 
-                    if ( yaw > 360.0f ) {
+                    if ( yaw > 360.0f ) 
+					{
                         yaw -= 360.0f;
                     }
 
@@ -1026,20 +1100,26 @@ void main() {
                     right = glms_cross( look, vec3s{ 0.0f, 1.0f, 0.0f });
                 }
 
-                if ( input_handler.is_key_down( Keys::KEY_W ) ) {
+                if ( input_handler.is_key_down( Keys::KEY_W ) ) 
+				{
                     eye = glms_vec3_add( eye, glms_vec3_scale( look, 5.0f * delta_time ) );
-                } else if ( input_handler.is_key_down( Keys::KEY_S ) ) {
+                } 
+				else if ( input_handler.is_key_down( Keys::KEY_S ) ) 
+				{
                     eye = glms_vec3_sub( eye, glms_vec3_scale( look, 5.0f * delta_time ) );
                 }
 
-                if ( input_handler.is_key_down( Keys::KEY_D ) ) {
+                if ( input_handler.is_key_down( Keys::KEY_D ) ) 
+				{
                     eye = glms_vec3_add( eye, glms_vec3_scale( right, 5.0f * delta_time ) );
-                } else if ( input_handler.is_key_down( Keys::KEY_A ) ) {
+                } 
+				else if ( input_handler.is_key_down( Keys::KEY_A ) ) 
+				{
                     eye = glms_vec3_sub( eye, glms_vec3_scale( right, 5.0f * delta_time ) );
                 }
 
                 mat4s view = glms_lookat( eye, glms_vec3_add( eye, look ), vec3s{ 0.0f, 1.0f, 0.0f } );
-                mat4s projection = glms_perspective( glm_rad( 60.0f ), gpu.swapchain_width * 1.0f / gpu.swapchain_height, 0.01f, 1000.0f );
+                mat4s projection = glms_perspective( glm_rad( 60.0f ), gpu_device.swapchain_width * 1.0f / gpu_device.swapchain_height, 0.01f, 1000.0f );
 
                 // Calculate view projection matrix
                 mat4s view_projection = glms_mat4_mul( projection, view );
@@ -1062,44 +1142,52 @@ void main() {
 
                 memcpy( cb_data, &uniform_data, sizeof( UniformData ) );
 
-                gpu.unmap_buffer( cb_map );
+                gpu_device.unmap_buffer( cb_map );
             }
         }
 
-        if ( !window.minimized ) {
-            raptor::CommandBuffer* gpu_commands = gpu.get_command_buffer( QueueType::Graphics, true );
+        if ( !window.minimized ) 
+		{
+            raptor::CommandBuffer* gpu_commands = gpu_device.get_command_buffer( QueueType::Graphics, true );
             gpu_commands->push_marker( "Frame" );
 
             gpu_commands->clear( 0.3f, 0.9f, 0.3f, 1.0f );
             gpu_commands->clear_depth_stencil( 1.0f, 0 );
-            gpu_commands->bind_pass( gpu.get_swapchain_pass() );
+            gpu_commands->bind_pass( gpu_device.get_swapchain_pass() );
             gpu_commands->bind_pipeline( cube_pipeline );
             gpu_commands->set_scissor( nullptr );
             gpu_commands->set_viewport( nullptr );
 
-            for ( u32 mesh_index = 0; mesh_index < mesh_draws.size; ++mesh_index ) {
+            for ( u32 mesh_index = 0; mesh_index < mesh_draws.size; ++mesh_index ) 
+			{
                 MeshDraw mesh_draw = mesh_draws[ mesh_index ];
                 mesh_draw.material_data.model_inv = glms_mat4_inv( glms_mat4_transpose( glms_mat4_mul( global_model, mesh_draw.material_data.model ) ) );
 
                 MapBufferParameters material_map = { mesh_draw.material_buffer, 0, 0 };
-                MaterialData* material_buffer_data = ( MaterialData* )gpu.map_buffer( material_map );
+                MaterialData* material_buffer_data = ( MaterialData* )gpu_device.map_buffer( material_map );
 
                 memcpy( material_buffer_data, &mesh_draw.material_data, sizeof( MaterialData ) );
 
-                gpu.unmap_buffer( material_map );
+                gpu_device.unmap_buffer( material_map );
 
                 gpu_commands->bind_vertex_buffer( mesh_draw.position_buffer, 0, mesh_draw.position_offset );
                 gpu_commands->bind_vertex_buffer( mesh_draw.normal_buffer, 2, mesh_draw.normal_offset );
 
-                if ( mesh_draw.material_data.flags & MaterialFeatures_TangentVertexAttribute ) {
+                if ( mesh_draw.material_data.flags & MaterialFeatures_TangentVertexAttribute ) 
+				{
                     gpu_commands->bind_vertex_buffer( mesh_draw.tangent_buffer, 1, mesh_draw.tangent_offset );
-                } else {
+                } 
+				else 
+				{
                     gpu_commands->bind_vertex_buffer( dummy_attribute_buffer, 1, 0 );
                 }
 
-                if ( mesh_draw.material_data.flags & MaterialFeatures_TexcoordVertexAttribute ) {
+                if ( mesh_draw.material_data.flags & MaterialFeatures_TexcoordVertexAttribute ) 
+				{
                     gpu_commands->bind_vertex_buffer( mesh_draw.texcoord_buffer, 3, mesh_draw.texcoord_offset );
-                } else {
+                } 
+				else 
+				{
                     gpu_commands->bind_vertex_buffer( dummy_attribute_buffer, 3, 0 );
                 }
 
@@ -1113,46 +1201,50 @@ void main() {
 
             gpu_commands->pop_marker();
 
-            gpu_profiler.update( gpu );
+            gpu_profiler.update( gpu_device );
 
             // Send commands to GPU
-            gpu.queue_command_buffer( gpu_commands );
-            gpu.present();
+            gpu_device.queue_command_buffer( gpu_commands );
+            gpu_device.present();
 
-        } else {
+        } 
+		else 
+		{
             ImGui::Render();
         }
 
         FrameMark;
     }
 
-    for ( u32 mesh_index = 0; mesh_index < mesh_draws.size; ++mesh_index ) {
+    for ( u32 mesh_index = 0; mesh_index < mesh_draws.size; ++mesh_index ) 
+	{
         MeshDraw& mesh_draw = mesh_draws[ mesh_index ];
-        gpu.destroy_descriptor_set( mesh_draw.descriptor_set );
-        gpu.destroy_buffer( mesh_draw.material_buffer );
+        gpu_device.destroy_descriptor_set( mesh_draw.descriptor_set );
+        gpu_device.destroy_buffer( mesh_draw.material_buffer );
     }
 
-    for ( u32 mi = 0; mi < custom_mesh_buffers.size; ++mi ) {
-        gpu.destroy_buffer( custom_mesh_buffers[ mi ] );
+    for ( u32 mi = 0; mi < custom_mesh_buffers.size; ++mi ) 
+	{
+        gpu_device.destroy_buffer( custom_mesh_buffers[ mi ] );
     }
     custom_mesh_buffers.shutdown();
 
-    gpu.destroy_buffer( dummy_attribute_buffer );
+    gpu_device.destroy_buffer( dummy_attribute_buffer );
 
-    gpu.destroy_texture( dummy_texture );
-    gpu.destroy_sampler( dummy_sampler );
+    gpu_device.destroy_texture( dummy_texture );
+    gpu_device.destroy_sampler( dummy_sampler );
 
     mesh_draws.shutdown();
 
-    gpu.destroy_buffer( cube_cb );
-    gpu.destroy_pipeline( cube_pipeline );
-    gpu.destroy_descriptor_set_layout( cube_dsl );
+    gpu_device.destroy_buffer( cube_cb );
+    gpu_device.destroy_pipeline( cube_pipeline );
+    gpu_device.destroy_descriptor_set_layout( cube_dsl );
 
     imgui->shutdown();
 
     gpu_profiler.shutdown();
 
-    rm.shutdown();
+    resource_manager.shutdown();
     renderer.shutdown();
 
     samplers.shutdown();

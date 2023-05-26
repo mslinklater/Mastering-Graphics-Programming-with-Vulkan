@@ -212,7 +212,7 @@ struct GpuDevice : public Service {
 
     void                            update_descriptor_set_instant( const DescriptorSetUpdate& update );
 
-    ResourcePool                    buffers;
+    ResourcePool                    buffer_pool;
     ResourcePool                    textures;
     ResourcePool                    pipelines;
     ResourcePool                    samplers;
@@ -226,6 +226,7 @@ struct GpuDevice : public Service {
     BufferHandle                    fullscreen_vertex_buffer;
     RenderPassHandle                swapchain_pass;
     SamplerHandle                   default_sampler;
+	
     // Dummy resources
     TextureHandle                   dummy_texture;
     BufferHandle                    dummy_constant_buffer;

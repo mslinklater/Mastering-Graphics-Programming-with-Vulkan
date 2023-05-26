@@ -531,7 +531,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     vkCreateQueryPool( vulkan_device, &vqpci, vulkan_allocation_callbacks, &vulkan_timestamp_query_pool );
 
     //// Init pools
-    buffers.init( allocator, 4096, sizeof( Buffer ) );
+    buffer_pool.init( allocator, 4096, sizeof( Buffer ) );
     textures.init( allocator, 512, sizeof( Texture ) );
     render_passes.init( allocator, 256, sizeof( RenderPass ) );
     descriptor_set_layouts.init( allocator, 128, sizeof( DesciptorSetLayout ) );
@@ -747,7 +747,7 @@ void GpuDevice::shutdown() {
 
     //command_buffers.shutdown();
     pipelines.shutdown();
-    buffers.shutdown();
+    buffer_pool.shutdown();
     shaders.shutdown();
     textures.shutdown();
     samplers.shutdown();
@@ -1398,7 +1398,7 @@ PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation ) {
 }
 
 BufferHandle GpuDevice::create_buffer( const BufferCreation& creation ) {
-    BufferHandle handle = { buffers.obtain_resource() };
+    BufferHandle handle = { buffer_pool.obtain_resource() };
     if ( handle.index == k_invalid_index ) {
         return handle;
     }
@@ -2076,7 +2076,7 @@ RenderPassHandle GpuDevice::create_render_pass( const RenderPassCreation& creati
 // Resource Destruction /////////////////////////////////////////////////////////
 
 void GpuDevice::destroy_buffer( BufferHandle buffer ) {
-    if ( buffer.index < buffers.pool_size ) {
+    if ( buffer.index < buffer_pool.pool_size ) {
         resource_deletion_queue.push( { ResourceDeletionType::Buffer, buffer.index, current_frame } );
     } else {
         rprint( "Graphics error: trying to free invalid Buffer %u\n", buffer.index );
@@ -2145,12 +2145,12 @@ void GpuDevice::destroy_shader_state( ShaderStateHandle shader ) {
 // Real destruction methods - the other enqueue only the resources.
 void GpuDevice::destroy_buffer_instant( ResourceHandle buffer ) {
 
-    Buffer* v_buffer = ( Buffer* )buffers.access_resource( buffer );
+    Buffer* v_buffer = ( Buffer* )buffer_pool.access_resource( buffer );
 
     if ( v_buffer && v_buffer->parent_buffer.index == k_invalid_buffer.index ) {
         vmaDestroyBuffer( vma_allocator, v_buffer->vk_buffer, v_buffer->vma_allocation );
     }
-    buffers.release_resource( buffer );
+    buffer_pool.release_resource( buffer );
 }
 
 void GpuDevice::destroy_texture_instant( ResourceHandle texture ) {
@@ -3078,11 +3078,11 @@ const Texture * GpuDevice::access_texture( TextureHandle texture ) const {
 }
 
 Buffer* GpuDevice::access_buffer( BufferHandle buffer ) {
-    return (Buffer*)buffers.access_resource( buffer.index );
+    return (Buffer*)buffer_pool.access_resource( buffer.index );
 }
 
 const Buffer* GpuDevice::access_buffer( BufferHandle buffer ) const {
-    return (const Buffer*)buffers.access_resource( buffer.index );
+    return (const Buffer*)buffer_pool.access_resource( buffer.index );
 }
 
 Pipeline* GpuDevice::access_pipeline( PipelineHandle pipeline ) {
